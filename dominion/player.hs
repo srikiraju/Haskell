@@ -67,7 +67,18 @@ moved :: String -> Play -> Bool
 moved _ _ = True 
 
 move :: State -> Play
-move (State {hand=x}) = (Cleanc (head x))
+move state@State{actions=a, buys=b, coins=c, hand=h, supply=s}
+    | a >= 1 && b >= 1 && (Action Mine) `elem` h && (Treasure Silver) `elem` h && (Treasure Gold) `elem` s = ActMine Silver Gold
+    | a >= 1 && b >= 1 && (Action Mine) `elem` h && (Treasure Copper) `elem` h && (Treasure Silver) `elem` s = ActMine Copper Silver
+    | b >= 1 && c >= 8 && (Victory Province) `elem` s = Buy (Victory Province)
+    | b >= 1 && c >= 6 && (Treasure Gold) `elem` s = Buy (Treasure Gold)
+    | b >= 1 && c >= 5 && (Action Mine) `elem` s = Buy (Action Mine)
+    | b >= 1 && c >= 5 && (Victory Duchy) `elem` s = Buy (Victory Duchy)
+    | b >= 1 && c >= 3 && (Treasure Silver) `elem` s = Buy (Treasure Silver)
+    | b >= 1 && c >= 2 && (Victory Estate) `elem` s = Buy (Victory Estate)
+    | b >= 1 && c >= 0 && (Treasure Copper) `elem` s = Buy (Treasure Copper)
+    | length h >= 0 = (Cleanc (head h))
+    | otherwise = Clean
 
 
 
@@ -137,21 +148,45 @@ leftShift :: [a] -> [a]
 leftShift [] = []
 leftShift x = (tail x) ++ [head x]
 
+isDuchy :: Card -> Bool
+isDuchy (Victory Duchy) = True
+isDuchy _ = False
+
+isProvince :: Card -> Bool
+isProvince (Victory Province) = True
+isProvince _ = False
+
+isEstate :: Card -> Bool
+isEstate (Victory Estate) = True
+isEstate _ = False
+
 isMine :: Card -> Bool
 isMine (Action Mine) = True
 isMine _ = False
 
 prettyCards :: [Card] -> String
 prettyCards x = "Gold: " ++ show (coinCount x) ++ ", Mines: " ++ show (length( filter isMine x ))
+    ++ "\nEstates: " ++ show( length( filter isEstate x ) )
+    ++ "\nDuchy: " ++ show( length( filter isDuchy x ) )
+    ++ "\nProvince: " ++ show( length( filter isProvince x ) )
 
-prettyState :: GlobalState -> String
-prettyState global = "GlobalState: Current player = " ++ head (gplayers global) ++
+prettyGlobalState :: GlobalState -> String
+prettyGlobalState global = "GlobalState: Current player = " ++ head (gplayers global) ++
     "\nSupply: " ++ prettyCards (gsupply global) ++ "\nTrash: " ++ prettyCards( gtrash global ) ++
-    "\nPlayer Decks: " ++ show (playerdecks global) ++ "\nPlayerHands: " ++
-    show( playerhands global ) ++ "\nPlayerDiscards: " ++ show( playerdiscards global ) ;
+    "\nGlobal Decks: " ++ show (playerdecks global) ++ "\nGlobal Hands: " ++
+    show( playerhands global ) ++ "\nGlobal Discards: " ++ show( playerdiscards global ) ;
 
+prettyState :: State -> String
+prettyState global = "Local State: Current player = " ++ head (players global) ++
+    "\nSupply: " ++ prettyCards (supply global) ++ "\nTrash: " ++ prettyCards( trash global ) ++
+    "\nPlayer Deck: " ++ show (deck global) ++ "\nPlayer Hand: " ++
+    show( hand global ) ++ "\nPlayer Discard: " ++ show( discards global ) ++
+    "\nActions: " ++ show (actions global) ++ " Buys: " ++ show (buys global) ++
+    " Coins: " ++ show( coins global )
+
+--TODO: Send moves to other players
 handlePlay :: GlobalState -> State -> Play -> GlobalState
-handlePlay a b c | trace ( "handlePlay: Global: " ++ prettyState a ++ "\nState: " ++ show b ++ "\nPlay: " ++ show c ) False = undefined
+handlePlay a b c | trace ( "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nhandlePlay: Global: " ++ prettyGlobalState a ++ "\nState: " ++ prettyState b ++ "\nPlay: " ++ show c ) False = undefined
 handlePlay global@GlobalState{playerhands = h:hs, gsupply = s, phase = ph} ps (ActMine x y) 
     | succ x == y && Treasure x `elem` h
       && Treasure y `elem` s && actions ps >= 1
@@ -160,7 +195,7 @@ handlePlay global@GlobalState{playerhands = h:hs, gsupply = s, phase = ph} ps (A
                               gsupply = delete (Treasure y) s, 
                               gtrash = gtrash global ++ [(Treasure x)],
                               playerdecks = playerdecks global,
-                              playerhands = ( (delete (Treasure x) h) ++ [(Treasure y)]):hs,
+                              playerhands = ( delete (Action Mine) ((delete (Treasure x) h)) ++ [(Treasure y)]):hs,
                               playsinprogress = [(Action Mine)] ++ playsinprogress global,
                               playerdiscards = playerdiscards global,
                               phase = PhaseAction }
@@ -201,7 +236,7 @@ handlePlay global@GlobalState{phase=ph, gsupply=s} ps@State{coins=x,buys=y} (Buy
                                    discards = head (playerdiscards new_global) } in
             handlePlay new_global new_state (move new_state)
     | otherwise = error "Problem at Buy card"
-
+--TODO
 handlePlay _ _ (Clean) = error "Unimplemented"
 
 handlePlay global@GlobalState{playerdecks=d:ds} ps@State{hand=h} (Cleanc x) = let dis = (h ++ head (playerdiscards global)) in
@@ -226,21 +261,36 @@ handlePlay global@GlobalState{playerdecks=d:ds} ps@State{hand=h} (Cleanc x) = le
                                   playerdecks = ds ++ [newdeck],
                                   playerhands = (tail (playerhands global)) ++ [newhand],
                                   playsinprogress = [],
-                                  playerdiscards = tail( playerdiscards global) ++ [],
+                                  playerdiscards = tail( playerdiscards global) ++ [[]],
                                   phase = PhaseAction }
 
 
 --TODO: need to send to different players on different processes
 letPlay :: GlobalState -> String -> GlobalState
-letPlay a b | trace ( "=======================================\nletPlay: Global: " ++ prettyState a ++ "\nPlayer: " ++ show b ) False = undefined
+letPlay a b | trace ( "=============================================\nletPlay: Global: " ++ prettyGlobalState a ++ "\nPlayer: " ++ show b ) False = undefined
 letPlay global@GlobalState{} player = handlePlay global (getPlayerState global) (move (getPlayerState global))
 
 
+foldl'' :: (b -> Bool) -> (b -> a -> b) -> b -> [a] -> b
+foldl'' test f z []     = z
+foldl'' test f z (x:xs) = if test z then z else foldl'' test f (f z x) xs
+
+--TODO: Full victory condition
+gameOver :: GlobalState -> Bool
+gameOver global = if length( filter isEstate (gsupply global) ) == 0 then True else False
+
 runServer :: [String] -> GlobalState
 runServer a | trace ( "runServ: Players: " ++ show a ) False = undefined
-runServer players = foldl letPlay (initGlobalState players) (take 2 (cycle players))
+runServer players = foldl'' gameOver letPlay (initGlobalState players) (cycle players)
 
 
 main :: IO()
-main = putStrLn( show ( runServer( ["a", "b", "c", "d"] ) ) )
+main = let final = runServer( ["a", "b", "c", "d"] ) in
+    do
+        putStrLn( "============================" )
+        putStrLn( prettyGlobalState ( final ) )
+        let cards = zipWith3 (\x y z -> x ++ y ++ z) (playerdecks final) (playerhands final) (playerdiscards final) in
+            mapM_ putStrLn (zipWith (\x y -> "Player: " ++ x ++ "\n" ++ y) (gplayers final) (map prettyCards cards) )
+
+
 
