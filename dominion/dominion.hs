@@ -1,6 +1,4 @@
-module Dominion
-(
-) where
+module Dominion where
 
 
 data Phase = PhaseAction | PhaseBuy | PhaseCleanup deriving (Eq, Show, Read, Enum, Ord)
