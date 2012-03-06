@@ -40,17 +40,6 @@ initGlobalState a | trace ( "initGlobalState: Players " ++ show a ) False = unde
 initGlobalState players = let startdeckss = unsafePerformIO (mapM shuffle (take (length players) (repeat initDeck)) ) in
                          GlobalState { gplayers=players, gsupply = initSupply (length players), gtrash=[], playsinprogress =[], playerdiscards=take (length players) (repeat []), playerhands = map ( take 5 ) startdeckss, playerdecks = map ( drop 5 ) startdeckss, phase = PhaseAction }
 
---Buying cost
-cardCost :: Card -> Int
-cardCost (Treasure Copper) = 0
-cardCost (Treasure Silver) = 3
-cardCost (Treasure Gold) = 6
-cardCost (Victory Estate) = 2
-cardCost (Victory Duchy) = 5
-cardCost (Victory Province) = 8
-cardCost (Action Mine) = 5
-cardCost _ = error "Card cost of what?"
-
 
 --Gold val
 cardValue :: Card -> Int
