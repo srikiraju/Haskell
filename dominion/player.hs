@@ -230,7 +230,7 @@ move ls@LocalState{needMoat=nm, moatBump=mb, end=e} state@State{actions=a, buys=
     | b >= 1 && c >= 5 && (Action Mine) `elem` s && percent_action < 0.30 = (newls, Buy (Action Mine))
     | b >= 1 && c >= 5 && (Action Market) `elem` s && percent_action < 0.40 = (newls, Buy (Action Market))
 -- | b >= 1 && c >= 5 && (Victory Duchy) `elem` s = (newls, Buy (Victory Duchy))
-    | b >= 1 && c >= 4 && (Action Militia) `elem` s && ( length $ filter (== (Action Militia)) all_cards ) < 3  = (newls, Buy (Action Militia))
+    | b >= 1 && c >= 4 && (Action Militia) `elem` s && ( length $ filter (== (Action Militia)) all_cards ) < 3  && nm == False = (newls, Buy (Action Militia))
     | b >= 1 && c >= 4 && (Action Smithy) `elem` s && percent_action < 0.25 = (newls, Buy (Action Smithy))
 --    | b >= 1 && c >= 4 && (Action Remodel) `elem` s && percent_action < 0.18  = (newls, Buy (Action Remodel))
 --    | b >= 1 && c >= 3 && (Action Workshop) `elem` s && percent_action < 0.10 && ( length $ filter (== (Action Workshop)) all_cards ) < 2 = (newls, Buy (Action Workshop))
@@ -238,7 +238,7 @@ move ls@LocalState{needMoat=nm, moatBump=mb, end=e} state@State{actions=a, buys=
    -- | b >= 1 && c >= 3 && (Action Woodcutter) `elem` s && percent_action < 0.10 && (length $ filter (== (Action Woodcutter)) all_cards) < 2 = (newls, Buy (Action Woodcutter))
     | b >= 1 && c >= 3 && (Treasure Silver) `elem` s = (newls, Buy (Treasure Silver))
     | b >= 1 && c >= 2 && (Action Moat) `elem` s && percent_action < (0.05 + mb) && nm = (newls, Buy (Action Moat))
-    | b >= 1 && c >= 2 && (Action Cellar) `elem` s && percent_action < 0.20 && (length $ filter (==(Action Cellar)) all_cards) < 5 = (newls, Buy (Action Cellar))
+    | b >= 1 && c >= 2 && (Action Cellar) `elem` s && percent_action < 0.20 && (length $ filter (==(Action Cellar)) all_cards) < 4 = (newls, Buy (Action Cellar))
 -- | b >= 1 && c >= 2 && (Victory Estate) `elem` s = (newls, Buy (Victory Estate))
     | b >= 1 && c >= 0 && (Treasure Copper) `elem` s && percent_copper < 0.05 = (newls, Buy (Treasure Copper))
 --Bummer
