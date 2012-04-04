@@ -7,6 +7,7 @@ import Data.Time.Clock
 import System.Locale
 import Debug.Hood.Observe
 import Debug.Trace
+import Data.List
 import Data.Char
 import Control.Concurrent
 import Network.BSD
@@ -59,8 +60,9 @@ runTLS params hostname portNumber f = do
           (\(e :: SomeException) -> sClose sock >> error ("cannot open socket " ++ show sockaddr ++ " " ++ show e))
     dsth <- socketToHandle sock ReadWriteMode
     ctx <- client params rng dsth
-    f ctx
-    hClose dsth
+    (ctx,i) <- f ctx
+    return (ctx,i)
+    --TODO:hClose dsth
 
 getDefaultParams sStorage session = defaultParams
     { pConnectVersion    = TLS10
@@ -116,9 +118,16 @@ remove args = do
                 liftIO $ writeFile "imap.cfg" $ to_string $ cp
             return ()
  
---search string accountname
---search string
-search args = return ()
+--search accountname string
+search :: [String] -> IO ()
+search args = do
+        (ctx,i) <- login (args !! 0)
+        searchView (args !! 1) ctx
+        sendData ctx $ LC.pack ( "a07 logout\r\n" )
+        d <- recvData ctx
+        --LC.putStrLn d
+        bye ctx
+        return () 
 
 parseManyAlls :: CharParser () [MailAll]
 parseManyAlls = do
@@ -196,7 +205,7 @@ address = do
 quotedStr :: CharParser () String
 quotedStr = 
     do char '"'
-       content <- many (noneOf "\"")
+       content <- many (noneOf "\\\"" <|> PAR.try (string "\\\"" >> return '"'))
        char '"' <?> "quote at end of cell"
        return content
 
@@ -230,7 +239,8 @@ eol =   PAR.try (string "\n\r")
     <?> "end of line"
 
 
-getMailForAccount accname = do
+
+login accname = do
     sStorage <- newIORef undefined
     hostname_t <- getFromCfg accname "hostname"
     port_t <- getFromCfg accname "port"
@@ -241,34 +251,112 @@ getMailForAccount accname = do
         port = forceEither port_t
         username = forceEither username_t
         password = forceEither password_t
-    runTLS (getDefaultParams sStorage Nothing) hostname (fromIntegral $ (read port :: Int)) $ \ctx -> do
+    (ctx,i) <- runTLS (getDefaultParams sStorage Nothing) hostname (fromIntegral $ (read port :: Int)) $ \ctx -> do
         handshake ctx
         d <- recvData ctx
         sendData ctx $ LC.pack ( "a01 login " ++ username ++ " " ++ password ++ "\r\n" )
         d <- recvData ctx
-        LC.putStrLn d
+        --LC.putStrLn d
         sendData ctx $ LC.pack ( "a02 select inbox\r\n" )
         d <- recvData ctx
         i <- return $ either (\x -> 0 :: Int ) (\x -> x) ( parse parseSelect "(parseSelect)" (LC.unpack d) )
+        return (ctx,i)
 
-        parseTest parseSelect (LC.unpack d)
-        threadDelay 3000
+    return (ctx,i)
+
+
+getMailForAccount ctx i = do
         sendData ctx $ LC.pack ( "a04 fetch " ++ show (i-10) ++ ":" ++ show i ++ " all\r\n" )
         d <- recvData ctx
-       
-        LC.putStrLn d
-
         all <- return $ either (\x -> [] ) (\x -> x) (parse parseManyAlls "(parseAlls)" (LC.unpack d) )
-        putStrLn $ show all 
+         
+        --sendData ctx $ LC.pack ( "a05 fetch " ++ show i ++ " body[text]\r\n" )
+        --d <- recvData ctx
+      
+        --LC.putStrLn d
+
+        --putStrLn $ show all 
 
         --parseTest flagsIsSeen "(\\Seen $NotJunk NotJunk)"
+
+        return (ctx,all)
+
+
+printMail :: [MailAll] -> IO ()
+printMail (x:xs) = do
+            putStrLn $ (show (fetchid x)) ++ " " ++ (concat $ from x) ++ " " ++ (subject x)
+            printMail xs
+            return ()
+printMail [] = return ()
+
+
+fetchBody :: TLSCtx Handle -> String -> IO (String) 
+fetchBody ctx content = do
+            d <- recvData ctx
+            d1 <- return $ LC.unpack d
+            if (reverse . take 27 . reverse $ d1) == "a0172 OK FETCH completed.\r\n" then 
+                return $ content ++ reverse( drop 27 (reverse d1))
+            else
+                fetchBody ctx ( content ++ d1 :: String )
+
+readMail ctx i max = do
+        i1 <- return $ ( read i :: Int )
+        if i1 <= max then do 
+            sendData ctx $ LC.pack ( "a0172 fetch " ++ i ++ " body[text]\r\n" )
+            d <- fetchBody ctx ""
+            putStrLn $ drop (fromMaybe 0  (elemIndex '\n' d)) d
+        else putStrLn "No such message" >> return ()
+     
+interactView_ ctx i max = do
+                    input <- getLine
+                    if all isDigit input && (not . null $ input) then
+                        readMail ctx input max >> interactView_ ctx i max
+                    else if input == "n" then
+                        interactView ctx (i - 10) max
+                    else if input == "p" then
+                        if ((i + 10) > max) then putStrLn "No messages there!" >> interactView_ ctx i max
+                        else interactView ctx (i + 10) max
+                    else if input == "e" then
+                        return ()
+                    else
+                        putStrLn "Can't handle that input" >> interactView_ ctx i max
+
+
+--go interactive
+--interactView :: TLSCtx Handle -> Int -> Int
+interactView ctx i max = do
+                    (ctx, mail) <- getMailForAccount ctx i
+                    printMail $ reverse mail
+                    interactView_ ctx i max
+--view accountname
+view args = do
+        (ctx,i) <- login (args !! 0 )
+        interactView ctx i i
         sendData ctx $ LC.pack ( "a07 logout\r\n" )
         d <- recvData ctx
-        LC.putStrLn d
+        --LC.putStrLn d
         bye ctx
-        return (d)
+        
+        return () 
 
---view accountname
-view args = getMailForAccount (args !! 0)
-                
-   
+
+fetchSearch :: TLSCtx Handle -> String -> IO (String)
+fetchSearch ctx content = do
+            d <- recvData ctx
+            d1 <- return $ LC.unpack d
+            if (reverse . take 26 . reverse $ d1) == "a183 OK FETCH completed.\r\n" then
+                return $ content ++ d1
+            else
+                fetchSearch ctx ( content ++ d1 :: String )
+
+searchView string ctx = do
+    sendData ctx $ LC.pack ( "A283 SEARCH TEXT \"" ++ string ++ "\"\r\n" )
+    d <- recvData ctx
+    d1 <- return $ reverse $ drop 9 (LC.unpack d)
+    sendData ctx $ LC.pack ( "a183 fetch " ++ ( reverse $drop 1 $ reverse $ concatMap (\x-> x ++ ",") $ words $reverse $ drop 24 d1)  ++ " all\r\n" )
+    mail <- fetchSearch ctx ""
+    putStrLn mail
+    parseTest parseManyAlls mail
+    all <- return $ either (\x -> [] ) (\x -> x) (parse parseManyAlls "(parseAlls)" mail )
+    printMail $ reverse all
+    if length all == 0 then return $ putStrLn "No messages found" else return $ putStrLn ""
