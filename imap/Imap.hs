@@ -31,7 +31,7 @@ import Prelude hiding (catch)
 import Data.IORef
 
 validateCert = True
-debug = True
+debug = False
 
 data MailAll = MailAll {
     seen :: Bool,
@@ -308,6 +308,8 @@ readMail ctx i max = do
         else putStrLn "No such message" >> return ()
      
 interactView_ ctx i max = do
+                    putStr "e/n/p/mailid:"
+                    hFlush stdout
                     input <- getLine
                     if all isDigit input && (not . null $ input) then
                         readMail ctx input max >> interactView_ ctx i max
