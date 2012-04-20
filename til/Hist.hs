@@ -216,3 +216,49 @@ updateTree tree ((x,y,z):xs) = do
                     'c' -> updateTree (updateTreeC_ tree z (splitDirectories y)) xs
                     'u' -> updateTree (updateTreeU_ tree z (splitDirectories y)) xs
                     'd' -> updateTree (updateTreeD_ tree z (splitDirectories y)) xs
+
+setDirToTree_ :: FilePath -> FilePath -> (String, Tree, String) -> IO ()
+setDirToTree_ tilDir dir (x,y,z) = do
+                case y of
+                    File -> copyFile ( tilDir </> "index" </> (take 5 z) </> (drop 5 z) ) (dir </> x)
+                    Tree _ -> setDirToTree tilDir (dir </> x) y
+
+setDirToTree :: FilePath -> FilePath -> Tree -> IO ()
+setDirToTree tilDir dir tree = do 
+        mapM_ ((setDirToTree_ tilDir dir)) (subtrees tree)
+
+
+
+diffFiles :: FilePath -> String -> String -> IO ()
+diffFiles tilDir x y = do
+                filex <- if length x == 40 then 
+                                return $ tilDir </> "index" </> take 5 x </> drop 5 x
+                            else
+                                return ""
+                filey <- if length x == 40 then 
+                                return $ tilDir </> "index" </> take 5 y </> drop 5 y
+                            else
+                                return ""
+                (x,y,z) <- readProcessWithExitCode "/usr/bin/diff" ["-N", filex, filey] ""
+                putStrLn y
+
+findHashInTree :: Tree -> String -> String
+findHashInTree tree name = maybe "" (trd1) (find (\x -> fst1 x == name) (subtrees tree))
+
+findTreeInTree :: Tree -> String -> Tree
+findTreeInTree tree name = maybe Tree{subtrees=[]} snd1 (find (\x -> fst1 x == name) (subtrees tree))
+
+
+diffTrees :: FilePath -> Tree -> Tree -> IO ()
+diffTrees tilDir from to = do
+            --unchanged = intersectBy (\x y -> trd1 x == trd1 y) (subtrees from) (subtrees to)
+            common <- return $ intersectBy (\x y -> fst1 x == fst1 y) (subtrees from) (subtrees to)
+            --deleted_from = deleteFirstsBy (\x y -> fst1 x == fst1 y) from common
+            added_to <- return $ deleteFirstsBy (\x y -> fst1 x == fst1 y) (subtrees to) common
+            --updated = deleteFirstsBy (\x y -> fst1 x == fst1 y) common unchanged
+            mapM_ (\x -> case snd1 x of
+                Tree _ -> diffTrees tilDir (snd1 x) (findTreeInTree to $ fst1 x)
+                File -> diffFiles tilDir (trd1 x) (findHashInTree to $ fst1 x)) (subtrees from)
+            mapM_ (\x -> case snd1 x of
+                Tree _ -> diffTrees tilDir Tree{subtrees=[]} (snd1 x)
+                File -> diffFiles tilDir "" (trd1 x)) added_to

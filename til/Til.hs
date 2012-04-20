@@ -31,12 +31,12 @@ writeStage stageContents = do
 
 dispatch :: [(String, [String] -> IO (Either TilError ()))]  
 dispatch =  [ ("commit", commit)  
-            , ("checkout", checkout)  
             , ("log", log_)
             , ("add", add)  
             , ("rm", rm)  
+            , ("diff", diff)  
             , ("status", status)  
-            , ("goto", goto)  --reset
+            , ("reset", reset)  --reset
             , ("branch", branch)
             , ("init", init_)
             ]
@@ -50,9 +50,7 @@ main = do
 
 
 checkout args = return $ Right ()
-log_ args = return $ Right ()
-status args = return $ Right  ()
-goto args = return $ Right ()
+
 branch args = return $ Right ()
 
 --Remove from stage - resets stage to whatever is in parent commit
@@ -81,7 +79,36 @@ verifyAdds parent_tree (x:xs) = do
                     else
                         throwError $ AddInvalidError $ "File does not exist: " ++ x
 
+logHelper (InitCommit _) _ = return ()
+logHelper commit x = do
+        liftIO $ putStrLn $ "commit " ++ commit_hash commit 
+        liftIO $ putStrLn $ "Author: " ++ author commit 
+        liftIO $ putStrLn $ "Date: " ++ (show $ date commit)
+        liftIO $ putStrLn $ message commit 
+        liftIO $ putStrLn "\n"
+        if (((length $ parents commit) == 0) || x == 1) then
+            return ()
+        else do
+            nextCommit <- readCommit (parents commit !! 0)
+            logHelper nextCommit (x-1)
 
+log_ args = do
+    runErrorT $ do
+        stage <- readStage
+        commit <- return $ parent_commit stage
+        if length args == 0 then
+            logHelper commit 10
+        else
+            logHelper commit (read $ args !! 0)
+        
+status args = do
+    runErrorT $ do
+        stage <- readStage
+        if (length $ adds stage) > 0 then do
+            liftIO $ putStrLn "These changes are staged: "
+            liftIO $ putStrLn $ show $ adds stage
+        else
+            liftIO $ putStrLn "No changes are staged"
 
 --Add to stage - compares working tree against what's in parent commit
 add args = do
@@ -145,6 +172,32 @@ commit args = runErrorT $ do
         else
             throwError $ CommitFailError "Nothing in stage to commit. Use til add."
 
---Check stage if something is actually there
---Read commit message 
---Actually commit
+--reset commitid
+reset args = do
+    runErrorT $ do
+        baseDir <- findBaseDirectory
+        tilDir <- findTilDirectory
+        if length args > 1 then
+            case (args !! 0) of
+                "--soft" -> do 
+                        commit <- readCommit (args !! 1)
+                        writeStage Stage{ parent_commit = commit, adds=[] }
+                "--hard" -> do
+                        commit <- readCommit (args !! 1)
+                        baseTree <- readTree $ tree_hash commit
+                        liftIO $ setDirToTree tilDir baseDir baseTree 
+                        writeStage Stage{ parent_commit = commit, adds=[] }
+        else do
+            commit <- readCommit (args !! 0)
+            baseTree <- readTree $ tree_hash commit
+            liftIO $ setDirToTree tilDir baseDir baseTree 
+            writeStage Stage{ parent_commit = commit, adds=[] }
+
+diff args = do
+    runErrorT $ do
+        tilDir <- findTilDirectory
+        from_commit <- readCommit (args !! 0)
+        from_tree <- readTree $ tree_hash from_commit
+        to_commit <- readCommit (args !! 1)
+        to_tree <- readTree $ tree_hash to_commit
+        liftIO $ diffTrees tilDir from_tree to_tree
