@@ -12,6 +12,7 @@ import Data.Time.Format
 import Data.Time.Clock
 import Data.List
 import System.Process
+import System.Exit
 
 data History = History {
                 all :: [Commit],
@@ -124,13 +125,10 @@ getBlobHash tree path = let folders = span (/= '/') path in
                                  (\stree -> if ((drop 1 $ snd folders) == "") then return $ trd1 stree else getBlobHash (snd1 stree) (drop 1 $ snd folders))
                                  (find (\x -> fst1 x == fst folders) (subtrees tree))
 
---from FS, relative to base directory
 getBlobHashFromFS :: MonadIO m => FilePath -> ErrorT TilError m String
-getBlobHashFromFS file = do
-            baseDir <- findBaseDirectory
-            fullPath <- return $ baseDir ++ "/" ++ file
+getBlobHashFromFS fullPath = do
             hash <- liftIO $ readProcess "openssl" ["sha1", fullPath] []
-            liftIO $ putStrLn $ take 40 $ drop 1 $ dropWhile (/= ' ') hash
+            --liftIO $ putStrLn $ take 40 $ drop 1 $ dropWhile (/= ' ') hash
             return $ take 40 $ drop 1 $ dropWhile (/= ' ') hash 
 
 --FilePath must always be relative to baseDirectory
@@ -138,12 +136,24 @@ writeFileIntoIndex :: MonadIO m => FilePath -> ErrorT TilError m String
 writeFileIntoIndex file | trace ("writeFileIntoIndex: " ++ show file) False = undefined
 writeFileIntoIndex file = do
             baseDir <- findBaseDirectory 
-            fullPath <- return $ baseDir ++ "/" ++ file
-            hash <- getBlobHashFromFS file
+            fullPath <- return $ baseDir </> file
+            hash <- getBlobHashFromFS fullPath
             dest_folder <- return $ take 5 hash
             liftIO $ createDirectoryIfMissing False (baseDir ++ "/.til/index/" ++ dest_folder)
             liftIO $ copyFile fullPath (baseDir ++ "/.til/index/" ++ dest_folder ++ "/" ++ (drop 5 hash))
             return hash
+
+writeStagedFileIntoIndex :: MonadIO m => FilePath -> ErrorT TilError m String
+writeStagedFileIntoIndex file | trace ("writeStagedFileIntoIndex: " ++ show file) False = undefined
+writeStagedFileIntoIndex file = do
+            tilDir <- findTilDirectory 
+            fullPath <- return $ tilDir </> "stage_store" </> file
+            hash <- getBlobHashFromFS fullPath
+            dest_folder <- return $ take 5 hash
+            liftIO $ createDirectoryIfMissing False (tilDir </> "index" </> dest_folder)
+            liftIO $ copyFile fullPath (tilDir </> "index" </> dest_folder </> (drop 5 hash))
+            return hash
+
 
 
 hashGenCommit :: String -> [String] -> String -> String
@@ -223,14 +233,29 @@ setDirToTree_ tilDir dir (x,y,z) = do
                     File -> copyFile ( tilDir </> "index" </> (take 5 z) </> (drop 5 z) ) (dir </> x)
                     Tree _ -> setDirToTree tilDir (dir </> x) y
 
+
+
+clearDirToTree_ :: FilePath -> (String, Tree, String) -> IO ()
+clearDirToTree_ dir (x,y,z) = do
+                case y of
+                    File -> removeFile (dir </> x)
+                    Tree _ -> clearDirToTree (dir </> x) y >> (removeDirectory $ dir </> x)
+
+
+
 setDirToTree :: FilePath -> FilePath -> Tree -> IO ()
 setDirToTree tilDir dir tree = do 
         mapM_ ((setDirToTree_ tilDir dir)) (subtrees tree)
 
 
 
-diffFiles :: FilePath -> String -> String -> IO ()
-diffFiles tilDir x y = do
+clearDirToTree :: FilePath -> Tree -> IO ()
+clearDirToTree dir tree = do 
+        mapM_ ((clearDirToTree_ dir)) (subtrees tree)
+
+
+diffFiles :: FilePath -> FilePath -> String -> String -> IO ()
+diffFiles fileName tilDir x y = do
                 filex <- if length x == 40 then 
                                 return $ tilDir </> "index" </> take 5 x </> drop 5 x
                             else
@@ -240,7 +265,9 @@ diffFiles tilDir x y = do
                             else
                                 return ""
                 (x,y,z) <- readProcessWithExitCode "/usr/bin/diff" ["-N", filex, filey] ""
-                putStrLn y
+                case x of
+                    ExitFailure 1 -> putStrLn fileName >> putStrLn y
+                    otherwise -> return ()
 
 findHashInTree :: Tree -> String -> String
 findHashInTree tree name = maybe "" (trd1) (find (\x -> fst1 x == name) (subtrees tree))
@@ -249,16 +276,16 @@ findTreeInTree :: Tree -> String -> Tree
 findTreeInTree tree name = maybe Tree{subtrees=[]} snd1 (find (\x -> fst1 x == name) (subtrees tree))
 
 
-diffTrees :: FilePath -> Tree -> Tree -> IO ()
-diffTrees tilDir from to = do
+diffTrees :: FilePath -> FilePath -> Tree -> Tree -> IO ()
+diffTrees fileName tilDir from to = do
             --unchanged = intersectBy (\x y -> trd1 x == trd1 y) (subtrees from) (subtrees to)
             common <- return $ intersectBy (\x y -> fst1 x == fst1 y) (subtrees from) (subtrees to)
             --deleted_from = deleteFirstsBy (\x y -> fst1 x == fst1 y) from common
             added_to <- return $ deleteFirstsBy (\x y -> fst1 x == fst1 y) (subtrees to) common
             --updated = deleteFirstsBy (\x y -> fst1 x == fst1 y) common unchanged
             mapM_ (\x -> case snd1 x of
-                Tree _ -> diffTrees tilDir (snd1 x) (findTreeInTree to $ fst1 x)
-                File -> diffFiles tilDir (trd1 x) (findHashInTree to $ fst1 x)) (subtrees from)
+                Tree _ -> diffTrees (fileName </> fst1 x) tilDir (snd1 x) (findTreeInTree to $ fst1 x)
+                File -> diffFiles (fileName </> fst1 x) tilDir (trd1 x) (findHashInTree to $ fst1 x)) (subtrees from)
             mapM_ (\x -> case snd1 x of
-                Tree _ -> diffTrees tilDir Tree{subtrees=[]} (snd1 x)
-                File -> diffFiles tilDir "" (trd1 x)) added_to
+                Tree _ -> diffTrees (fileName </> fst1 x) tilDir Tree{subtrees=[]} (snd1 x)
+                File -> diffFiles (fileName </> fst1 x) tilDir "" (trd1 x)) added_to

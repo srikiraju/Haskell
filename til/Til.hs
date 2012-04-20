@@ -61,12 +61,12 @@ verifyAdds parent_tree [] = do return []
 verifyAdds parent_tree (x:xs) = do
                 rest <- verifyAdds parent_tree xs
                 baseDir <- findBaseDirectory 
-                fullPath <- return $ baseDir ++ "/" ++ x
+                fullPath <- return $ baseDir </>  x
                 res <- liftIO $ doesFileExist $ fullPath
                 if containsFile parent_tree x then do --File is in parent tree, so make sure its modif
                     if res then do
                         hash <- getBlobHash parent_tree x
-                        new_hash <- getBlobHashFromFS x
+                        new_hash <- getBlobHashFromFS fullPath
                         if hash == new_hash then
                             throwError $ AddInvalidError $ "File hasn't changed: " ++ x
                         else
@@ -126,7 +126,7 @@ add args = do
         typed_adds <- verifyAdds tree base_adds
         old_adds <- return $ deleteFirstsBy (\x y -> snd x == snd y ) (adds stage) typed_adds
         stage <- return $ stage { adds = old_adds ++ typed_adds }
-        --TODO: Save files into .til/stage/...
+        liftIO $ mapM_ (\(_,a) -> do createDirectoryIfMissing True (dropFileName $ tilDir </> "stage_store" </> a) >> (copyFile (baseDir </> a) (tilDir </> "stage_store" </> a))) typed_adds
         writeStage stage
 
 
@@ -135,15 +135,17 @@ init_ args = runErrorT $ do
         --TODO: check if dir already exists
         liftIO $ createDirectory $ curDir ++ "/.til"
         liftIO $ createDirectory $ curDir ++ "/.til/index/"
+        liftIO $ createDirectory $ curDir ++ "/.til/stage_store/"
         liftIO $ writeFile (curDir ++ "/.til/stage") $ show Stage{ parent_commit = InitCommit{children=[]}, adds=[] } 
 
 
 commit args = runErrorT $ do
         stage <- readStage
+        tilDir <- findTilDirectory
         if (length $ adds stage) > 0
         then do
             --Everything on stage is changed, so we only need to update those blobs
-            new_hashes <- mapM (\x -> if fst x /= 'd' then (do hash <- (writeFileIntoIndex $ snd x); return (fst x, snd x, hash)) else (return ('d', snd x, "")) ) (adds stage)
+            new_hashes <- mapM (\x -> if fst x /= 'd' then (do hash <- (writeStagedFileIntoIndex $ snd x); return (fst x, snd x, hash)) else (return ('d', snd x, "")) ) (adds stage)
             parent_tree <- case parent_commit stage of
                 InitCommit _ -> return $ Tree {subtrees=[]}
                 Commit _ _ _ _ _ _ _ -> readTree $ tree_hash $ parent_commit stage
@@ -168,6 +170,8 @@ commit args = runErrorT $ do
             writeCommit (commit_hash commit) commit
             writeTree (hashGen new_tree) new_tree
             writeStage Stage{ parent_commit = commit, adds=[] }
+            liftIO $ removeDirectoryRecursive $ tilDir </> "stage_store"
+            liftIO $ createDirectory $ tilDir </> "stage_store"
             return ()
         else
             throwError $ CommitFailError "Nothing in stage to commit. Use til add."
@@ -183,11 +187,17 @@ reset args = do
                         commit <- readCommit (args !! 1)
                         writeStage Stage{ parent_commit = commit, adds=[] }
                 "--hard" -> do
+                        stage <- readStage
+                        parentTree <- readTree $ tree_hash $ parent_commit stage 
+                        liftIO $ clearDirToTree baseDir parentTree
                         commit <- readCommit (args !! 1)
                         baseTree <- readTree $ tree_hash commit
                         liftIO $ setDirToTree tilDir baseDir baseTree 
                         writeStage Stage{ parent_commit = commit, adds=[] }
         else do
+            stage <- readStage
+            parentTree <- readTree $ tree_hash $ parent_commit stage 
+            liftIO $ clearDirToTree baseDir parentTree
             commit <- readCommit (args !! 0)
             baseTree <- readTree $ tree_hash commit
             liftIO $ setDirToTree tilDir baseDir baseTree 
@@ -200,4 +210,4 @@ diff args = do
         from_tree <- readTree $ tree_hash from_commit
         to_commit <- readCommit (args !! 1)
         to_tree <- readTree $ tree_hash to_commit
-        liftIO $ diffTrees tilDir from_tree to_tree
+        liftIO $ diffTrees "" tilDir from_tree to_tree
