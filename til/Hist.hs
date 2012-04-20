@@ -253,9 +253,15 @@ clearDirToTree :: FilePath -> Tree -> IO ()
 clearDirToTree dir tree = do 
         mapM_ ((clearDirToTree_ dir)) (subtrees tree)
 
+diffFiles fileName from to | trace( "diffFiles: " ++ fileName ++ " " ++ from ++ " " ++ to ) False = undefined
+diffFiles fileName from to = do
+                (x,y,z) <- readProcessWithExitCode "/usr/bin/diff" ["-N", from, to] ""
+                case x of
+                    ExitFailure 1 -> putStrLn fileName >> putStrLn y
+                    otherwise -> return ()
 
-diffFiles :: FilePath -> FilePath -> String -> String -> IO ()
-diffFiles fileName tilDir x y = do
+diffIndexedFiles :: FilePath -> FilePath -> String -> String -> IO ()
+diffIndexedFiles fileName tilDir x y = do
                 filex <- if length x == 40 then 
                                 return $ tilDir </> "index" </> take 5 x </> drop 5 x
                             else
@@ -264,10 +270,7 @@ diffFiles fileName tilDir x y = do
                                 return $ tilDir </> "index" </> take 5 y </> drop 5 y
                             else
                                 return ""
-                (x,y,z) <- readProcessWithExitCode "/usr/bin/diff" ["-N", filex, filey] ""
-                case x of
-                    ExitFailure 1 -> putStrLn fileName >> putStrLn y
-                    otherwise -> return ()
+                diffFiles fileName filex filey
 
 findHashInTree :: Tree -> String -> String
 findHashInTree tree name = maybe "" (trd1) (find (\x -> fst1 x == name) (subtrees tree))
@@ -276,16 +279,25 @@ findTreeInTree :: Tree -> String -> Tree
 findTreeInTree tree name = maybe Tree{subtrees=[]} snd1 (find (\x -> fst1 x == name) (subtrees tree))
 
 
-diffTrees :: FilePath -> FilePath -> Tree -> Tree -> IO ()
-diffTrees fileName tilDir from to = do
+diffIndexedTrees :: FilePath -> FilePath -> Tree -> Tree -> IO ()
+diffIndexedTrees fileName tilDir from to = do
             --unchanged = intersectBy (\x y -> trd1 x == trd1 y) (subtrees from) (subtrees to)
             common <- return $ intersectBy (\x y -> fst1 x == fst1 y) (subtrees from) (subtrees to)
             --deleted_from = deleteFirstsBy (\x y -> fst1 x == fst1 y) from common
             added_to <- return $ deleteFirstsBy (\x y -> fst1 x == fst1 y) (subtrees to) common
             --updated = deleteFirstsBy (\x y -> fst1 x == fst1 y) common unchanged
             mapM_ (\x -> case snd1 x of
-                Tree _ -> diffTrees (fileName </> fst1 x) tilDir (snd1 x) (findTreeInTree to $ fst1 x)
-                File -> diffFiles (fileName </> fst1 x) tilDir (trd1 x) (findHashInTree to $ fst1 x)) (subtrees from)
+                Tree _ -> diffIndexedTrees (fileName </> fst1 x) tilDir (snd1 x) (findTreeInTree to $ fst1 x)
+                File -> diffIndexedFiles (fileName </> fst1 x) tilDir (trd1 x) (findHashInTree to $ fst1 x)) (subtrees from)
             mapM_ (\x -> case snd1 x of
-                Tree _ -> diffTrees (fileName </> fst1 x) tilDir Tree{subtrees=[]} (snd1 x)
-                File -> diffFiles (fileName </> fst1 x) tilDir "" (trd1 x)) added_to
+                Tree _ -> diffIndexedTrees (fileName </> fst1 x) tilDir Tree{subtrees=[]} (snd1 x)
+                File -> diffIndexedFiles (fileName </> fst1 x) tilDir "" (trd1 x)) added_to
+
+
+diffAgainstWorkingTree :: FilePath -> FilePath -> Tree -> IO ()
+diffAgainstWorkingTree fileName baseDir from = do
+            mapM_ (\x -> case snd1 x of
+                Tree _ -> diffAgainstWorkingTree (fileName </> fst1 x) baseDir (snd1 x)
+                File -> diffFiles (fileName </> fst1 x) (baseDir </> ".til" </> "index" </> (take 5 $ trd1 x) </> (drop 5 $ trd1 x)) (baseDir </> fileName </> fst1 x)) (subtrees from)
+
+

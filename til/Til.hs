@@ -205,9 +205,15 @@ reset args = do
 
 diff args = do
     runErrorT $ do
-        tilDir <- findTilDirectory
-        from_commit <- readCommit (args !! 0)
-        from_tree <- readTree $ tree_hash from_commit
-        to_commit <- readCommit (args !! 1)
-        to_tree <- readTree $ tree_hash to_commit
-        liftIO $ diffTrees "" tilDir from_tree to_tree
+        if length args == 0 then do
+            baseDir <- findBaseDirectory
+            stage <- readStage
+            base_tree <- readTree $ tree_hash $ parent_commit stage
+            liftIO $ diffAgainstWorkingTree "" baseDir base_tree 
+        else do
+            tilDir <- findTilDirectory
+            from_commit <- readCommit (args !! 0)
+            from_tree <- readTree $ tree_hash from_commit
+            to_commit <- readCommit (args !! 1)
+            to_tree <- readTree $ tree_hash to_commit
+            liftIO $ diffIndexedTrees "" tilDir from_tree to_tree
