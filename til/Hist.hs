@@ -15,12 +15,13 @@ import System.Process
 import System.Exit
 
 data History = History {
-                all :: [Commit],
-                heads :: [(Commit, String)]
+                heads :: [(String, String)] --BranchName/CommitHash
                 } deriving (Show,Read);
 
 data Stage = Stage {
-                parent_commit :: Commit,
+                parent_commit :: Commit, --HEAD
+                current_branch :: String, --branch-name + HEAD
+                merge_mode :: Bool,
                 adds :: [(Char,FilePath)]
                 } deriving (Show,Read);
 
@@ -52,6 +53,40 @@ instance Error TilError
 isValidHash :: String -> Bool
 isValidHash hash = (length hash == 40) --TODO: more?
 
+
+--readup the Stage file
+readStage :: MonadIO m => ErrorT TilError m Stage
+readStage = do
+            tilDir <- findTilDirectory
+            stage <- return (tilDir ++ "/stage")
+            stage_contents <- liftIO $ readFile stage
+            return $ read stage_contents
+
+
+writeStage :: MonadIO m => Stage -> ErrorT TilError m ()
+writeStage stageContents | trace ( "writeStage: " ++ show stageContents ) False = undefined
+writeStage stageContents = do
+            tilDir <- findTilDirectory
+            stage <- return $ tilDir ++ "/stage"
+            liftIO $ writeFile stage $ show stageContents
+
+--readup the history file
+readHist :: MonadIO m => ErrorT TilError m History
+readHist = do
+            tilDir <- findTilDirectory
+            hist <- return (tilDir ++ "/hist")
+            hist_contents <- liftIO $ readFile hist
+            return $ read hist_contents
+
+
+writeHist :: MonadIO m => History -> ErrorT TilError m ()
+writeHist histContents | trace ( "writeHist: " ++ show histContents ) False = undefined
+writeHist histContents = do
+            tilDir <- findTilDirectory
+            hist <- return $ tilDir ++ "/hist"
+            liftIO $ writeFile hist $ show histContents
+
+
 readCommit :: MonadIO m => String -> ErrorT TilError m Commit
 readCommit hash = do
             tilDir <- findTilDirectory
@@ -71,6 +106,7 @@ writeCommit hash content = do
 
 
 readTree :: MonadIO m => String -> ErrorT TilError m Tree
+readTree "" = return $ Tree{subtrees=[]}
 readTree hash = do
             tilDir <- findTilDirectory
             subDir <- return $ tilDir ++ "/index/" ++ take 5 hash ++ "/"
@@ -160,6 +196,7 @@ hashGenCommit :: String -> [String] -> String -> String
 hashGenCommit tree_hash parents message = concat $ map (printf "%02x") $ BS.unpack $ hash $ BS.pack $ tree_hash ++ (concat $ sort parents) ++ message
 
 hashGen :: Tree -> String
+hashGen File = error "Can't hashGen a File"
 hashGen tree = concat $ map (printf "%02x") $ (BS.unpack $ hash $ BS.pack $ concat $ sort $  map trd1 (subtrees tree))
 
 newTreeC_ :: String -> [FilePath] -> Tree
@@ -248,7 +285,7 @@ setDirToTree tilDir dir tree = do
         mapM_ ((setDirToTree_ tilDir dir)) (subtrees tree)
 
 
-
+--clearDirToTree baseDir Tree
 clearDirToTree :: FilePath -> Tree -> IO ()
 clearDirToTree dir tree = do 
         mapM_ ((clearDirToTree_ dir)) (subtrees tree)
@@ -300,4 +337,71 @@ diffAgainstWorkingTree fileName baseDir from = do
                 Tree _ -> diffAgainstWorkingTree (fileName </> fst1 x) baseDir (snd1 x)
                 File -> diffFiles (fileName </> fst1 x) (baseDir </> ".til" </> "index" </> (take 5 $ trd1 x) </> (drop 5 $ trd1 x)) (baseDir </> fileName </> fst1 x)) (subtrees from)
 
+findCommonAncestor_ visited a b | trace( "findCommonAncestor_: " ++ show visited ++ " " ++ show a ++ " " ++ show b ) False = undefined
+findCommonAncestor_ visited (InitCommit _) (InitCommit _) = return $ InitCommit{children=[]}
+findCommonAncestor_ visited (InitCommit a) b = findCommonAncestor_ visited b (InitCommit a)
+findCommonAncestor_ visited a b = do
+            if commit_hash a `elem` visited then
+                return a
+            else do
+                parents <- return $ parents a
+                parent <- if length parents == 0 then do
+                    return $ InitCommit{children=[]}
+                else do
+                    readCommit $ ( parents !! 0 )
+                findCommonAncestor_ (visited ++ [commit_hash a]) b parent
 
+findCommonAncestor a b = findCommonAncestor_ [] a b
+
+
+mergeFiles__ :: FilePath -> FilePath -> FilePath -> FilePath -> FilePath -> IO String
+mergeFiles__ fileName tilDir a b c | trace ("mergeFiles__:" ++ show fileName ++ " " ++ show tilDir ++ " " ++ show a ++ " " ++ show b ++ " " ++ show c) False = undefined 
+mergeFiles__ fileName tilDir a b c = do 
+                copyFile a (tilDir </> ".." </> fileName)
+                (x,y,z) <- readProcessWithExitCode "merge" [(tilDir </> ".." </> fileName), b, c] ""
+                case x of
+                    ExitFailure 1 -> return fileName
+                    otherwise -> return ""
+
+mergeFiles_ :: MonadIO m => FilePath -> FilePath -> String -> String -> String -> ErrorT TilError m String
+mergeFiles_ fileName tilDir from to common | trace ("mergeFiles_: " ++ show from ++ " " ++ show to ++ " " ++ show common) False = undefined
+mergeFiles_ fileName tilDir "" to common = mergeFiles_ fileName tilDir (take 40 $ repeat '0') to common
+mergeFiles_ fileName tilDir from "" common = mergeFiles_ fileName tilDir from (take 40 $ repeat '0') common
+mergeFiles_ fileName tilDir from to "" = mergeFiles_ fileName tilDir from to (take 40 $ repeat '0')
+mergeFiles_ fileName tilDir from to common = liftIO $ mergeFiles__ fileName tilDir (tilDir </> "index" </> take 5 from </> drop 5 from) (tilDir </> "index" </> take 5 to </> drop 5 to) (tilDir </> "index" </> take 5 common </> drop 5 common) 
+
+--TODO: handle files becoming folders boohoo
+mergeTrees :: MonadIO m => FilePath -> FilePath -> Tree -> Tree -> Tree -> ErrorT TilError m ([String], Tree)
+mergeTrees fileName tilDir from to common | trace( "mergeTrees: " ++ show fileName ++ " " ++ show tilDir ++ " " ++ show from ++ " " ++ show to ++ " " ++ show common ) False = undefined
+mergeTrees fileName tilDir from to common = do
+            updated <- return $ intersectBy (\x y -> fst1 x == fst1 y) (subtrees from) (subtrees to)
+            --deleted_from = deleteFirstsBy (\x y -> fst1 x == fst1 y) from common
+            added_to <- return $ deleteFirstsBy (\x y -> fst1 x == fst1 y) (subtrees to) updated
+
+            a <- mapM (\x -> (do
+                tmp <- case snd1 x of
+                    Tree _ -> mergeTrees (fileName </> fst1 x) tilDir (snd1 x) (findTreeInTree to $ fst1 x) (findTreeInTree common $ fst1 x)
+                    File -> do
+                        conf <- mergeFiles_ (fileName </> fst1 x) tilDir (trd1 x) (findHashInTree to $ fst1 x) (findHashInTree common $ fst1 x)
+                        return $ ([conf], File)
+                return $ (tmp, fst1 x)
+                )) (subtrees from)
+
+            b <- mapM (\x -> (do
+                tmp <- case snd1 x of
+                    Tree _ -> mergeTrees (fileName </> fst1 x) tilDir (snd1 x) (findTreeInTree to $ fst1 x) (findTreeInTree common $ fst1 x)
+                    File -> do
+                        conf <- mergeFiles_ (fileName </> fst1 x) tilDir (trd1 x) (findHashInTree to $ fst1 x) (findHashInTree common $ fst1 x)
+                        return $ ([conf], File)
+                return $ (tmp, fst1 x)
+                )) added_to
+
+            subtre <- mapM (\x -> do
+                                hash <- case (snd $ fst x) of
+                                            File -> getBlobHashFromFS $ tilDir </> ".." </> fileName </> snd x
+                                            Tree _-> return $ hashGen $ snd $ fst x 
+                                return $ (snd x, snd $ fst x, hash)
+                            ) (a ++ b)
+
+            conflicts <- return $ concat $ fst $ unzip $fst $ unzip $ a ++ b
+            return ( filter (/= "") conflicts, Tree{subtrees = subtre} )
