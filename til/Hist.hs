@@ -42,6 +42,12 @@ data Tree = Tree {
             } | File
                 deriving (Show, Read, Eq);
 
+data MergeData = MergeData {
+                mtree :: Tree,
+                mparents :: [String],
+                from :: String
+                } deriving (Show,Read);
+
 data TilError = TilNotFoundError |
                 AddInvalidError String |
                 CommitFailError String |
@@ -122,6 +128,21 @@ writeTree hash content = do
             subDir <- return $ tilDir ++ "/index/" ++ take 5 hash ++ "/"
             liftIO $ createDirectoryIfMissing False (subDir)
             liftIO $ writeFile (subDir ++ drop 5 hash) $ show content
+
+readMergeData :: MonadIO m => ErrorT TilError m MergeData
+readMergeData = do
+            tilDir <- findTilDirectory
+            stage <- return (tilDir ++ "/mdata")
+            stage_contents <- liftIO $ readFile stage
+            return $ read stage_contents
+
+
+writeMergeData :: MonadIO m => MergeData -> ErrorT TilError m ()
+writeMergeData stageContents | trace ( "writeMergeData: " ++ show stageContents ) False = undefined
+writeMergeData stageContents = do
+            tilDir <- findTilDirectory
+            stage <- return $ tilDir ++ "/mdata"
+            liftIO $ writeFile stage $ show stageContents
 
 
 --recursively traverse upwards until we find a .til or throw up
@@ -290,7 +311,7 @@ clearDirToTree :: FilePath -> Tree -> IO ()
 clearDirToTree dir tree = do 
         mapM_ ((clearDirToTree_ dir)) (subtrees tree)
 
-diffFiles fileName from to | trace( "diffFiles: " ++ fileName ++ " " ++ from ++ " " ++ to ) False = undefined
+--diffFiles fileName from to | trace( "diffFiles: " ++ fileName ++ " " ++ from ++ " " ++ to ) False = undefined
 diffFiles fileName from to = do
                 (x,y,z) <- readProcessWithExitCode "/usr/bin/diff" ["-N", from, to] ""
                 case x of
@@ -337,7 +358,7 @@ diffAgainstWorkingTree fileName baseDir from = do
                 Tree _ -> diffAgainstWorkingTree (fileName </> fst1 x) baseDir (snd1 x)
                 File -> diffFiles (fileName </> fst1 x) (baseDir </> ".til" </> "index" </> (take 5 $ trd1 x) </> (drop 5 $ trd1 x)) (baseDir </> fileName </> fst1 x)) (subtrees from)
 
-findCommonAncestor_ visited a b | trace( "findCommonAncestor_: " ++ show visited ++ " " ++ show a ++ " " ++ show b ) False = undefined
+--findCommonAncestor_ visited a b | trace( "findCommonAncestor_: " ++ show visited ++ " " ++ show a ++ " " ++ show b ) False = undefined
 findCommonAncestor_ visited (InitCommit _) (InitCommit _) = return $ InitCommit{children=[]}
 findCommonAncestor_ visited (InitCommit a) b = findCommonAncestor_ visited b (InitCommit a)
 findCommonAncestor_ visited a b = do
@@ -358,7 +379,7 @@ mergeFiles__ :: FilePath -> FilePath -> FilePath -> FilePath -> FilePath -> IO S
 mergeFiles__ fileName tilDir a b c | trace ("mergeFiles__:" ++ show fileName ++ " " ++ show tilDir ++ " " ++ show a ++ " " ++ show b ++ " " ++ show c) False = undefined 
 mergeFiles__ fileName tilDir a b c = do 
                 copyFile a (tilDir </> ".." </> fileName)
-                (x,y,z) <- readProcessWithExitCode "merge" [(tilDir </> ".." </> fileName), b, c] ""
+                (x,y,z) <- readProcessWithExitCode "merge" [(tilDir </> ".." </> fileName), c, b] ""
                 case x of
                     ExitFailure 1 -> return fileName
                     otherwise -> return ""
@@ -405,3 +426,16 @@ mergeTrees fileName tilDir from to common = do
 
             conflicts <- return $ concat $ fst $ unzip $fst $ unzip $ a ++ b
             return ( filter (/= "") conflicts, Tree{subtrees = subtre} )
+
+
+writeStagedTreeIntoIndex :: MonadIO m => FilePath -> Tree -> ErrorT TilError m Tree
+writeStagedTreeIntoIndex spath tree = do
+                                        subtre <- mapM (\(name,tree,hash) -> case tree of
+                                                    File -> do 
+                                                        hsh <- writeStagedFileIntoIndex (spath </> name)
+                                                        return (name, File, hsh)
+                                                    Tree _ -> do
+                                                        tre <- writeStagedTreeIntoIndex (spath </> name) tree
+                                                        return (name, tre, hashGen tre)
+                                            ) (subtrees tree)
+                                        return Tree {subtrees = subtre}
