@@ -70,7 +70,7 @@ logHelper commit x = do
         liftIO $ putStrLn $ "Author: " ++ author commit 
         liftIO $ putStrLn $ "Date: " ++ (show $ date commit)
         liftIO $ putStrLn $ message commit 
-        liftIO $ putStrLn "\n"
+        liftIO $ putStrLn ""
         if (((length $ parents commit) == 0) || x == 1) then
             return ()
         else do
@@ -84,6 +84,7 @@ log_ args = do
             return $ parent_commit stage
         else do
             (readCommit (args !! 0))
+        liftIO $ putStrLn $ "Branch " ++ current_branch stage
         logHelper commit 10
         
 status args = do
@@ -109,31 +110,41 @@ status args = do
 --Add to stage - compares working tree against what's in parent commit
 add args = do
     runErrorT $ do
-        tilDir <- findTilDirectory
-        baseDir <- findBaseDirectory
-        curDir <- liftIO $ getCurrentDirectory
-        stage <- readStage
-        canon <- liftIO $ mapM (\x -> do res <- doesFileExist x; if res then canonicalizePath x else return $ curDir ++ "/" ++ x ) args
-        base_adds <- return $ map (makeRelative baseDir) canon
-        if merge_mode stage == False then do
-            commit <- return $ parent_commit stage
-            tree <- case commit of
-                InitCommit _ -> return $ Tree {subtrees=[]}
-                Commit _ _ _ _ _ _ _ -> readTree $ tree_hash commit
-            typed_adds <- verifyAdds tree base_adds
-            old_adds <- return $ deleteFirstsBy (\x y -> snd x == snd y ) (adds stage) typed_adds
-            stage <- return $ stage { adds = old_adds ++ typed_adds }
-            liftIO $ mapM_ (\(_,a) -> do createDirectoryIfMissing True (dropFileName $ tilDir </> "stage_store" </> a) >> (copyFile (baseDir </> a) (tilDir </> "stage_store" </> a))) typed_adds
-            writeStage stage
+        if length args == 0 then do
+            throwError $ MiscError "Not enough arguments"
         else do
-            --TODO: more checks
-            mapM_ (\x -> do 
-                    res <- liftIO $ doesFileExist x
-                    if res then (return ()) else (throwError $ MiscError $ "Invalid file:" ++ x)
-                  ) base_adds
-            liftIO $ mapM_ (\a -> do createDirectoryIfMissing True (dropFileName $ tilDir </> "stage_store" </> a) >> (copyFile (baseDir </> a) (tilDir </> "stage_store" </> a))) base_adds
-            writeStage $ stage{ adds = (adds stage \\ zip (take (length base_adds) $ repeat 'm') base_adds) }
-             
+            tilDir <- findTilDirectory
+            baseDir <- findBaseDirectory
+            curDir <- liftIO $ getCurrentDirectory
+            stage <- readStage
+            canon <- liftIO $ mapM (\x -> do res <- doesFileExist x; if res then canonicalizePath x else return $ curDir ++ "/" ++ x ) args
+            base_adds <- return $ map (makeRelative baseDir) canon
+            if merge_mode stage == False then do
+                commit <- return $ parent_commit stage
+                tree <- case commit of
+                    InitCommit _ -> return $ Tree {subtrees=[]}
+                    Commit _ _ _ _ _ _ _ -> readTree $ tree_hash commit
+                typed_adds <- verifyAdds tree base_adds
+                old_adds <- return $ deleteFirstsBy (\x y -> snd x == snd y ) (adds stage) typed_adds
+                stage <- return $ stage { adds = old_adds ++ typed_adds }
+                liftIO $ putStrLn $ show typed_adds
+                liftIO $ mapM_ (\(t,a) ->
+                            if t /= 'd' then do
+                                createDirectoryIfMissing True (dropFileName $ tilDir </> "stage_store" </> a)
+                                (copyFile (baseDir </> a) (tilDir </> "stage_store" </> a))
+                            else
+                                return ()
+                            ) typed_adds
+                writeStage stage
+            else do
+                --TODO: more checks, deleted files
+                mapM_ (\x -> do 
+                        res <- liftIO $ doesFileExist x
+                        if res then (return ()) else (throwError $ MiscError $ "Invalid file:" ++ x)
+                      ) base_adds
+                liftIO $ mapM_ (\a -> do createDirectoryIfMissing True (dropFileName $ tilDir </> "stage_store" </> a) >> (copyFile (baseDir </> a) (tilDir </> "stage_store" </> a))) base_adds
+                writeStage $ stage{ adds = (adds stage \\ zip (take (length base_adds) $ repeat 'm') base_adds) }
+                 
 
 init_ args = runErrorT $ do
         curDir <- liftIO $ getCurrentDirectory
@@ -177,7 +188,7 @@ commit args = runErrorT $ do
             writeTree (hashGen new_tree) new_tree
             writeStage Stage{ parent_commit = commit, adds=[], current_branch = current_branch stage, merge_mode = False }
             hist <- readHist
-            new_heads <- return $ deleteBy (\x y -> fst x == fst y) (from md, "") $ (deleteBy (\x y -> fst x == fst y) (current_branch stage,"") (heads hist))
+            new_heads <- return $ (deleteBy (\x y -> fst x == fst y) (current_branch stage,"") (heads hist))
             writeHist $ hist{ heads =  new_heads ++ [(current_branch stage, commit_hash commit)] }
             liftIO $ removeDirectoryRecursive $ tilDir </> "stage_store"
             liftIO $ createDirectory $ tilDir </> "stage_store"
@@ -248,7 +259,9 @@ reset args = do
         baseDir <- findBaseDirectory
         tilDir <- findTilDirectory
         stage <- readStage
-        if length args > 1 then
+        if length args == 0 then
+            liftIO $ putStrLn "Not enough args"
+        else if length args > 1 then
             case (args !! 0) of
                 "--soft" -> do 
                         commit <- readCommit (args !! 1)
@@ -264,8 +277,8 @@ reset args = do
                         writeHist $ hist{ heads = (deleteBy (\x y -> fst x == fst y) (current_branch stage,"") (heads hist)) ++ [(current_branch stage, commit_hash commit)] }
         else do
             parentTree <- readTree $ tree_hash $ parent_commit stage 
-            liftIO $ clearDirToTree baseDir parentTree
             commit <- readCommit (args !! 0)
+            liftIO $ clearDirToTree baseDir parentTree
             baseTree <- readTree $ tree_hash commit
             liftIO $ setDirToTree tilDir baseDir baseTree 
             writeStage Stage{ parent_commit = commit, adds=[], current_branch = current_branch stage, merge_mode = False}
@@ -322,6 +335,7 @@ merge args = do
     runErrorT $ do
         stage <- readStage
         baseDir <- findBaseDirectory
+        tilDir <- findTilDirectory
         if (length (adds stage)) > 0 then do --Ensure empty stage
             throwError $ MiscError "You will need to have nothing on stage"
         else do
@@ -331,42 +345,52 @@ merge args = do
             other_commit <- readCommit other_commit_hash
             other_tree <- readTree $ tree_hash $ other_commit
             common_commit <- findCommonAncestor (parent_commit stage) (other_commit)
-            common_tree <- readTree $ tree_hash common_commit 
-            (conflicts, merged_tree) <- mergeTrees "" (baseDir </> ".til") this_tree other_tree common_tree 
-            if length conflicts > 0 then do
-                liftIO $ putStrLn "Conflicts:"
-                liftIO $ mapM_ (\x -> putStrLn x) conflicts
-                liftIO $ putStrLn "Use add and then commit as usual"
-
-                parents1 <- return $[commit_hash $ parent_commit stage, other_commit_hash]
-                writeMergeData $ MergeData{ mtree = merged_tree, mparents = parents1, from = args !! 0 }
-                writeStage $ stage{ merge_mode = True, adds = zip (take  (length conflicts) $ repeat 'm') conflicts } 
-                liftIO $ removeDirectoryRecursive $ baseDir </> ".til" </> "stage_store"
-                liftIO $ createDirectory $ baseDir </> ".til" </> "stage_store"
-                liftIO $ mergeStageHelper baseDir "" merged_tree
-                
-            else do
-                liftIO $ putStrLn $ "New tree:" ++ show merged_tree
-                tree_hash <- return $ hashGen merged_tree
-                liftIO $ putStrLn "Enter commit message: "
-                commitMsg <- liftIO $ getLine
-                time <- liftIO $ getCurrentTime
-                parents1 <- return $[commit_hash $ parent_commit stage, other_commit_hash]
-                commit <- return $ Commit{ commit_hash = hashGenCommit (hashGen merged_tree) parents1 commitMsg,
-                                    tree_hash = hashGen merged_tree,
-                                    parents = parents1,
-                                    children = [],
-                                    author = "Srikanth Raju",
-                                    date = time,
-                                    message = commitMsg }
-                liftIO $ putStrLn $ show commit
-                writeCommit (commit_hash commit) commit
-                writeTree (hashGen merged_tree) merged_tree
-                writeStage Stage{ parent_commit = commit, adds=[], current_branch = current_branch stage, merge_mode = False}
+            
+            if ((commit_hash common_commit) == (commit_hash $ parent_commit stage)) then do
+                --FAST FORWARD! JOY    
+                liftIO $ clearDirToTree baseDir this_tree
+                liftIO $ setDirToTree tilDir baseDir other_tree
                 hist <- readHist
-                new_heads <- return $ deleteBy (\x y -> fst x == fst y) (args !! 0,"") $ (deleteBy (\x y -> fst x == fst y) (current_branch stage,"") (heads hist))
-                writeHist $ hist{ heads =  new_heads ++ [(current_branch stage, commit_hash commit)] }
-                liftIO $ removeDirectoryRecursive $ baseDir </> ".til" </> "stage_store"
-                liftIO $ createDirectory $ baseDir </> ".til" </> "stage_store"
-                return ()
-     
+                writeHist $ hist{ heads = (deleteBy (\x y -> fst x == fst y) (current_branch stage,"") (heads hist)) ++ [(current_branch stage, commit_hash common_commit)] }
+                writeStage Stage{ parent_commit = other_commit, adds=[], current_branch = current_branch stage, merge_mode = False}
+                liftIO $ putStrLn $ "Fast forwarded to " ++ commit_hash other_commit
+            else do
+                common_tree <- readTree $ tree_hash common_commit 
+                (conflicts, merged_tree) <- mergeTrees "" (baseDir </> ".til") this_tree other_tree common_tree 
+                if length conflicts > 0 then do
+                    liftIO $ putStrLn "Conflicts:"
+                    liftIO $ mapM_ (\x -> putStrLn x) conflicts
+                    liftIO $ putStrLn "Use add and then commit as usual"
+
+                    parents1 <- return $[commit_hash $ parent_commit stage, other_commit_hash]
+                    writeMergeData $ MergeData{ mtree = merged_tree, mparents = parents1, from = args !! 0 }
+                    writeStage $ stage{ merge_mode = True, adds = zip (take  (length conflicts) $ repeat 'm') conflicts } 
+                    liftIO $ removeDirectoryRecursive $ baseDir </> ".til" </> "stage_store"
+                    liftIO $ createDirectory $ baseDir </> ".til" </> "stage_store"
+                    liftIO $ mergeStageHelper baseDir "" merged_tree
+                    
+                else do
+                    liftIO $ putStrLn $ "New tree:" ++ show merged_tree
+                    tree_hash <- return $ hashGen merged_tree
+                    liftIO $ putStrLn "Enter commit message: "
+                    commitMsg <- liftIO $ getLine
+                    time <- liftIO $ getCurrentTime
+                    parents1 <- return $[commit_hash $ parent_commit stage, other_commit_hash]
+                    commit <- return $ Commit{ commit_hash = hashGenCommit (hashGen merged_tree) parents1 commitMsg,
+                                        tree_hash = hashGen merged_tree,
+                                        parents = parents1,
+                                        children = [],
+                                        author = "Srikanth Raju",
+                                        date = time,
+                                        message = commitMsg }
+                    liftIO $ putStrLn $ show commit
+                    writeCommit (commit_hash commit) commit
+                    writeTree (hashGen merged_tree) merged_tree
+                    writeStage Stage{ parent_commit = commit, adds=[], current_branch = current_branch stage, merge_mode = False}
+                    hist <- readHist
+                    new_heads <- return $ (deleteBy (\x y -> fst x == fst y) (current_branch stage,"") (heads hist))
+                    writeHist $ hist{ heads =  new_heads ++ [(current_branch stage, commit_hash commit)] }
+                    liftIO $ removeDirectoryRecursive $ baseDir </> ".til" </> "stage_store"
+                    liftIO $ createDirectory $ baseDir </> ".til" </> "stage_store"
+                    return ()
+         

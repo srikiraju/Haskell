@@ -13,6 +13,8 @@ import Data.Time.Clock
 import Data.List
 import System.Process
 import System.Exit
+import System.IO
+import System.IO.Error
 
 data History = History {
                 heads :: [(String, String)] --BranchName/CommitHash
@@ -36,6 +38,7 @@ data Commit = Commit {
                 } | InitCommit {
                 children :: [String]
                 } deriving (Show, Read);
+--TODO: ^Remove the InitCommit leaf?
 
 data Tree = Tree { 
                 subtrees :: [(String,Tree,String)] --Name,Tree,Hash
@@ -221,7 +224,7 @@ hashGen File = error "Can't hashGen a File"
 hashGen tree = concat $ map (printf "%02x") $ (BS.unpack $ hash $ BS.pack $ concat $ sort $  map trd1 (subtrees tree))
 
 newTreeC_ :: String -> [FilePath] -> Tree
-newTreeC_ base_hash x | trace ( "newTreeC_:" ++ show base_hash ++ "  " ++ show x ) False = undefined
+--newTreeC_ base_hash x | trace ( "newTreeC_:" ++ show base_hash ++ "  " ++ show x ) False = undefined
 newTreeC_ base_hash [] = File
 newTreeC_ base_hash (x:xs) = let stree = newTreeC_ base_hash xs in
                                 case stree of
@@ -229,7 +232,7 @@ newTreeC_ base_hash (x:xs) = let stree = newTreeC_ base_hash xs in
                                     Tree _ -> Tree{ subtrees = [(x, stree, hashGen stree)] }
 
 updateTreeC_ :: Tree -> String -> [FilePath] -> Tree
-updateTreeC_ tree blob_hash x | trace ( "updateTreeC_: " ++ show tree ++ ":" ++ show blob_hash ++ ":" ++ show x ) False = undefined
+--updateTreeC_ tree blob_hash x | trace ( "updateTreeC_: " ++ show tree ++ ":" ++ show blob_hash ++ ":" ++ show x ) False = undefined
 updateTreeC_ _ _ [] = File
 updateTreeC_ tree blob_hash (x:xs) =
                     let res = find (\y -> x == fst1 y) (subtrees tree) in
@@ -244,7 +247,7 @@ updateTreeC_ tree blob_hash (x:xs) =
 
 
 updateTreeU_ :: Tree -> String -> [FilePath] -> Tree
-updateTreeU_ tree blob_hash x | trace ( "updateTreeU_: " ++ show tree ++ ":" ++ show blob_hash ++ ":" ++ show x ) False = undefined
+--updateTreeU_ tree blob_hash x | trace ( "updateTreeU_: " ++ show tree ++ ":" ++ show blob_hash ++ ":" ++ show x ) False = undefined
 updateTreeU_ _ _ [] = File
 updateTreeU_ tree blob_hash (x:xs) =
                     let res = find (\y -> x == fst1 y) (subtrees tree) in
@@ -258,7 +261,7 @@ updateTreeU_ tree blob_hash (x:xs) =
 
 
 updateTreeD_ :: Tree -> String -> [FilePath] -> Tree
-updateTreeD_ tree blob_hash x | trace ( "updateTreeD_: " ++ show tree ++ ":" ++ show blob_hash ++ ":" ++ show x ) False = undefined
+--updateTreeD_ tree blob_hash x | trace ( "updateTreeD_: " ++ show tree ++ ":" ++ show blob_hash ++ ":" ++ show x ) False = undefined
 updateTreeD_ _ _ [] = File
 updateTreeD_ tree blob_hash (x:xs) =
                     let res = find (\y -> x == fst1 y) (subtrees tree) in
@@ -296,7 +299,9 @@ setDirToTree_ tilDir dir (x,y,z) = do
 clearDirToTree_ :: FilePath -> (String, Tree, String) -> IO ()
 clearDirToTree_ dir (x,y,z) = do
                 case y of
-                    File -> removeFile (dir </> x)
+                    File -> do
+                        try $ removeFile (dir </> x)
+                        return ()
                     Tree _ -> clearDirToTree (dir </> x) y >> (removeDirectory $ dir </> x)
 
 
